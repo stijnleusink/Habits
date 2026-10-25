@@ -1,0 +1,30 @@
+import { addDays, datesBetween, localDate, monthStart, parseDate, weekStart } from './dates';
+import type { AppData, Habit, HabitEntry, HabitVersion, Goal } from './schema';
+export const round=(n:number)=>Math.round(n*1e6)/1e6;
+export function versionAt(h:Habit,date:string):HabitVersion|undefined{return h.versions.findLast(v=>v.effectiveFrom<=date);}
+export function scheduled(v:HabitVersion,date:string):boolean {return date>=v.start&&(!v.end||date<=v.end)&&v.status!=='archived'&&(v.schedule.type==='daily'||(v.schedule.type==='weekdays'?v.schedule.days.includes(parseDate(date).getDay()):v.schedule.dates.includes(date)));}
+const indexes=new WeakMap<AppData,Map<string,HabitEntry>>();
+function entryIndex(d:AppData) {let index=indexes.get(d);if(!index){index=new Map(d.entries.map(e=>[e.habitId+':'+e.date,e]));indexes.set(d,index);}return index;}
+export function invalidate(d:AppData){indexes.delete(d);}
+export function dayItems(d:AppData,date:string){const map=entryIndex(d);return d.habits.flatMap(h=>{const v=versionAt(h,date);if(!v||!scheduled(v,date))return [];const entry=map.get(h.id+':'+date);const value=entry?.value??0,paused=v.status==='paused'||!!entry?.paused;return [{habit:h,version:v,entry,value,paused,done:!paused&&value>=v.target,percent:Math.min(100,value/v.target*100)}];});}
+export function dayScore(d:AppData,date:string){const items=dayItems(d,date),active=items.filter(i=>!i.paused),done=active.filter(i=>i.done).length;return {date,items,total:active.length,done,paused:items.length-active.length,score:active.length?done/active.length*100:null,xp:done*10+(active.length&&done===active.length?20:0)};}
+export type DayScore=ReturnType<typeof dayScore>;
+export function firstDay(d:AppData,today=localDate()):string {return d.habits.reduce((min,h)=>h.versions.reduce((m,v)=>v.start<v.effectiveFrom?(v.effectiveFrom<m?v.effectiveFrom:m):(v.start<m?v.start:m),min),today);}
+export function history(d:AppData,today=localDate()){return datesBetween(firstDay(d,today),today).map(date=>dayScore(d,date));}
+export function mean(rows:{score:number|null}[]):number|null{const valid=rows.filter(r=>r.score!==null);return valid.length?valid.reduce((n,r)=>n+r.score!,0)/valid.length:null;}
+export function streak(rows:{date:string,score:number|null}[],today=localDate()){let current=0,longest=0;for(const r of rows){if(r.score===null)continue;if(r.score===100){current++;longest=Math.max(longest,current);}else if(r.date<today)current=0;}return {current,longest};}
+export function habitStats(d:AppData,id:string,today=localDate()){const rows=history(d,today).flatMap(r=>{const i=r.items.find(i=>i.habit.id===id);return i&&!i.paused?[{date:r.date,score:i.done?100:0,value:i.value,target:i.version.target}]:[];});const closed=rows.filter(r=>r.date<today);return {rows,planned:rows.length,done:rows.filter(r=>r.score===100).length,percent:mean(rows),closedPercent:mean(closed),closedCount:closed.length,...streak(rows,today)};}
+export function goalValue(d:AppData,g:Goal,today=localDate()):number {if(g.start>today)return 0;if(!g.habitId)return g.progress;const end=g.end&&g.end<today?g.end:today;return round(d.entries.filter(e=>e.habitId===g.habitId&&e.date>=g.start&&e.date<=end&&!e.paused).reduce((n,e)=>{const h=d.habits.find(h=>h.id===g.habitId),v=h&&versionAt(h,e.date);if(!v||!scheduled(v,e.date)||v.status!=='active'||(g.metric==='amount'&&v.unit!==g.unit))return n;return n+(g.metric==='amount'?e.value:(e.value>=v.target?1:0));},0));}
+export const goalXP=(g:Goal)=>g.kind==='week'?50:g.kind==='month'?100:150;
+export function careerXP(d:AppData,today=localDate()){return history(d,today).reduce((n,r)=>n+r.xp,0)+d.goals.filter(g=>goalValue(d,g,today)>=g.target).reduce((n,g)=>n+goalXP(g),0);}
+export function levelInfo(xp:number){let level=1,base=0,next=100;while(xp>=next){level++;base=next;next+=50*(level+1);}return {level,base,next,remaining:next-xp,percent:100*(xp-base)/(next-base)};}
+export function wallet(d:AppData,today=localDate()){const earned=careerXP(d,today),spent=d.redemptions.reduce((n,r)=>n+r.cost,0);return {earned,spent,available:Math.max(0,earned-spent),correctionDebt:Math.max(0,spent-earned)};}
+export function achievements(d:AppData,today=localDate()) {const rows=history(d,today),s=streak(rows,today),xp=careerXP(d,today),done=rows.reduce((n,r)=>n+r.done,0);const weeks=new Map<string,DayScore[]>();for(const r of rows){const key=weekStart(r.date);if(addDays(key,6)>=today)continue;weeks.set(key,[...(weeks.get(key)||[]),r]);}const perfectWeek=[...weeks.values()].some(w=>w.length===7&&w.some(r=>r.total>0)&&w.every(r=>r.score===null||r.score===100));return [
+ {name:'Eerste stap',rule:'Voltooi je eerste gewoonte.',earned:done>0,icon:'🌱'},
+ {name:'Consistent',rule:'Behaal drie perfecte dagen in totaal.',earned:rows.filter(r=>r.score===100).length>=3,icon:'✨'},
+ ...[[7,'Doorzetter','🔥'],[14,'Discipline','⚡'],[30,'Onstuitbaar','🏆']].map(([n,name,icon])=>({name:String(name),rule:`Een algemene streak van ${n} perfecte meetellende dagen.`,earned:s.longest>=Number(n),icon:String(icon)})),
+ {name:'Perfecte week',rule:'Een afgesloten maandag–zondag, met elke geplande dag perfect. Minimaal één geplande dag.',earned:perfectWeek,icon:'📅'},
+ {name:'Goal Crusher',rule:'Behaal één doel.',earned:d.goals.some(g=>goalValue(d,g,today)>=g.target),icon:'🎯'},
+ {name:'Level Up',rule:'Bereik level 5 (700 XP).',earned:xp>=700,icon:'🚀'}];}
+export function dashboard(d:AppData,today=localDate()){const rows=history(d,today),week=rows.filter(r=>r.date>=weekStart(today)),month=rows.filter(r=>r.date>=monthStart(today));return {rows,week,month,weekMean:mean(week),monthMean:mean(month),...streak(rows,today),xp:careerXP(d,today),totalDone:rows.reduce((n,r)=>n+r.done,0)};}
+export function grouped(rows:{date:string,score:number|null}[],kind:'day'|'week'|'month'){const groups=new Map<string,typeof rows>();for(const r of rows){const key=kind==='week'?weekStart(r.date):kind==='month'?monthStart(r.date):r.date;groups.set(key,[...(groups.get(key)??[]),r]);}return [...groups].map(([date,rs])=>({date,score:mean(rs)}));}

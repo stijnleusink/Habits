@@ -1,0 +1,33 @@
+import {describe,it,expect,afterEach,vi} from 'vitest';
+import {Repository} from '../database/repository';
+import {exportBackup,parseBackup,backupDue,checksum,MAX_BACKUP_BYTES} from '../lib/backup';
+import {demoData} from '../lib/demo';
+import {emptyData,validateData} from '../lib/schema';
+const repos:Repository[]=[];
+function repo(mode:'live'|'test'='test'){const r=new Repository(mode,'unit-'+crypto.randomUUID());repos.push(r);return r;}
+afterEach(async()=>{vi.restoreAllMocks();await Promise.all(repos.splice(0).map(r=>r.close()));});
+describe('Back-upvalidatie en volledige roundtrip',()=>{
+ it('K: alle brongegevens blijven gelijk na export/import in lege database',async()=>{const source=repo(),target=repo();const d=demoData();d.settings.theme='light';d.redemptions.push({id:'redemption',rewardId:'demo-reward',cost:100,redeemedAt:new Date().toISOString()});d.entries[0].note='Notitie 💧';d.entries[1].paused=true;await source.replace(d,0);const before=await source.read();const text=await exportBackup(before.data,'test');const backup=await parseBackup(text,'test');await target.replace(backup.data,0);expect((await target.read()).data).toEqual(before.data);});
+ it('bestaande database vervangen met vooraf een herstelpunt',async()=>{const r=repo();await r.mutate(d=>{d.settings.name='Bestaand';});const old=await r.read();await r.replace(demoData(),old.revision);expect((await r.points()).some(p=>p.data.settings.name==='Bestaand')).toBe(true);});
+ it('JSON-fout wijzigt niets',async()=>{const r=repo();const before=await r.read();await expect(parseBackup('{bad','test')).rejects.toThrow('JSON');expect(await r.read()).toEqual(before);});
+ it('gewijzigde inhoud faalt de SHA-256-controle',async()=>{const b=JSON.parse(await exportBackup(demoData(),'test'));b.data.settings.name='Tamper';await expect(parseBackup(JSON.stringify(b),'test')).rejects.toThrow('controlecode');});
+ it('testdata kan niet naar live; livedata kan niet naar test',async()=>{await expect(parseBackup(await exportBackup(demoData(),'test'),'live')).rejects.toThrow('testback-up');await expect(parseBackup(await exportBackup(demoData(),'live'),'test')).rejects.toThrow('echte gegevens');});
+ it.each(['schemaVersion','format'])('weigert onbekend %s',async(field)=>{const b=JSON.parse(await exportBackup(emptyData(),'test'));b[field]='future';await expect(parseBackup(JSON.stringify(b),'test')).rejects.toThrow('niet-ondersteund');});
+ it('weigert te grote bestanden',async()=>{await expect(parseBackup(' '.repeat(MAX_BACKUP_BYTES+1),'test')).rejects.toThrow('te groot');});
+ it('weigert negatieve waarden, nuldoelen en verweesde verwijzingen',()=>{const d=demoData();d.entries[0].value=-1;expect(()=>validateData(d)).toThrow();d.entries[0].value=0;d.habits[0].versions[0].target=0;expect(()=>validateData(d)).toThrow();d.habits[0].versions[0].target=3;d.entries[0].habitId='missing';expect(()=>validateData(d)).toThrow();});
+ it('weigert dubbele IDs en registraties',()=>{const d=demoData();d.entries.push({...d.entries[0]});expect(()=>validateData(d)).toThrow();d.entries.pop();d.habits.push(d.habits[0]);expect(()=>validateData(d)).toThrow();});
+ it('weigert ongeldige datums en extra velden',()=>{const d=demoData();d.reflections[0].date='2026-02-30';expect(()=>validateData(d)).toThrow();expect(()=>validateData({...emptyData(),surprise:true})).toThrow();});
+ it('ook een correct herberekende checksum maakt corrupte structuur niet geldig',async()=>{const b=JSON.parse(await exportBackup(demoData(),'test'));b.data.entries[0].value=-2;const {checksum:_,...fields}=b;b.checksum=await checksum(fields);await expect(parseBackup(JSON.stringify(b),'test')).rejects.toThrow('Ongeldig');});
+ it('lege database is exporteerbaar en herstelbaar',async()=>{const d=emptyData();expect((await parseBackup(await exportBackup(d,'test'),'test')).data).toEqual(d);});
+});
+describe('Transacties, isolatie en herinneringen',()=>{
+ it('fout tijdens wegschrijven rolt data EN herstelpunt terug',async()=>{const r=repo();await r.mutate(d=>{d.settings.name='Veilig';});const before=await r.read(),points=await r.points();const proto=IDBObjectStore.prototype,original=proto.put;vi.spyOn(proto,'put').mockImplementation(function(this:IDBObjectStore,...args:Parameters<typeof original>){if(this.name==='current')throw new DOMException('Simulated storage full','QuotaExceededError');return original.apply(this,args);});await expect(r.replace(demoData(),before.revision)).rejects.toThrow();vi.restoreAllMocks();expect(await r.read()).toEqual(before);expect(await r.points()).toEqual(points);});
+ it('snelle gelijktijdige wijzigingen gaan niet verloren',async()=>{const r=repo();await r.read();await Promise.all(Array.from({length:20},()=>r.mutate(d=>{d.settings.defaultStep+=1;})));expect((await r.read()).data.settings.defaultStep).toBe(20.25);});
+ it('twee tabbladen schrijven op dezelfde database zonder lost update',async()=>{const a=repo();const b=new Repository('test',a.name);repos.push(b);await a.read();await Promise.all([a.mutate(d=>{d.settings.name='Naam';}),b.mutate(d=>{d.settings.theme='light';})]);expect((await a.read()).data.settings).toMatchObject({name:'Naam',theme:'light'});});
+ it('stale bevestiging vervangt geen wijzigingen uit andere tab',async()=>{const r=repo();const old=await r.read();await r.mutate(d=>{d.settings.name='Nieuw';});await expect(r.replace(demoData(),old.revision)).rejects.toThrow('intussen gewijzigd');expect((await r.read()).data.settings.name).toBe('Nieuw');});
+ it('afzonderlijke live- en testdatabases zijn geïsoleerd',async()=>{const live=repo('live'),test=repo('test');await live.mutate(d=>{d.settings.name='Echt';});const before=await live.read();await test.replace(demoData(),0);await test.replace(emptyData(),1);expect(await live.read()).toEqual(before);});
+ it('houdt maximaal tien herstelpunten',async()=>{const r=repo();for(let i=0;i<15;i++)await r.mutate(d=>{d.settings.name=String(i);},'Testpunt');expect(await r.points()).toHaveLength(10);});
+ it('mislukte mutatie beschadigt bestaande gegevens niet',async()=>{const r=repo();const old=await r.read();await expect(r.mutate(d=>{d.settings.defaultStep=0;})).rejects.toThrow();expect(await r.read()).toEqual(old);});
+ it('herinnering na meer dan zeven dagen en als er geen back-up is',()=>{const now=new Date('2026-10-25T12:00:00Z');expect(backupDue(null,now)).toBe(true);expect(backupDue('2026-10-18T12:00:00Z',now)).toBe(false);expect(backupDue('2026-10-18T11:59:59Z',now)).toBe(true);});
+ it('export aanbieden is nog geen bevestigde externe back-up',async()=>{const r=repo();await r.markBackup(false);expect((await r.metadata()).lastExternalAt).toBeNull();await r.markBackup(true);expect((await r.metadata()).lastExternalAt).not.toBeNull();});
+});

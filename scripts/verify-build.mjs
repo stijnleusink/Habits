@@ -1,0 +1,15 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import assert from 'node:assert/strict';
+const root=path.resolve('dist');
+const manifest=JSON.parse(fs.readFileSync(path.join(root,'manifest.webmanifest'),'utf8'));
+assert.equal(manifest.name,'Habits');assert.equal(manifest.display,'standalone');
+for(const icon of manifest.icons)assert(fs.existsSync(path.join(root,icon.src.replace(/^\//,''))),'Missing icon '+icon.src);
+const sw=fs.readFileSync(path.join(root,'sw.js'),'utf8');
+const urls=[...sw.matchAll(/url:"([^"]+)"/g)].map(m=>m[1]);
+assert(urls.some(u=>u==='index.html'||u==='/index.html'),'App shell missing from precache');
+assert(urls.some(u=>u.endsWith('.css')),'Styles missing from precache');
+assert(urls.some(u=>u.endsWith('.js')),'JavaScript missing from precache');
+for(const url of urls)assert(fs.existsSync(path.join(root,url.replace(/^\//,''))),'Missing precache asset '+url);
+assert(!fs.existsSync(path.join(root,'qa-mobile.html')),'Temporary QA page must not be shipped');
+console.log(JSON.stringify({status:'PASS',manifest:true,precacheAssets:urls.length,assetsPresent:true},null,2));

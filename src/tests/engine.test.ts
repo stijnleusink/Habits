@@ -1,0 +1,31 @@
+import {describe,it,expect} from 'vitest';
+import {emptyData,defaultVersion,type AppData} from '../lib/schema';
+import {dayScore,habitStats,mean,history,careerXP,streak,levelInfo,goalValue,wallet} from '../lib/engine';
+import {setEntry,saveVersion,redeem,reconcileGoals} from '../lib/actions';
+import {addDays,localDate,weekStart,validDate} from '../lib/dates';
+const today='2026-10-25';
+function base(n=1,date=today):AppData {const d=emptyData();for(let i=0;i<n;i++)d.habits.push({id:'h'+i,versions:[{...defaultVersion(date),name:'Gewoonte '+i}]});return d;}
+describe('Scores, geschiedenis, XP en streaks',()=>{
+ it('A: drie van vier = 75%',()=>{const d=base(4);for(let i=0;i<3;i++)setEntry(d,'h'+i,today,{value:1},today);expect(dayScore(d,today).score).toBe(75);});
+ it('B: 2/3 liter telt als 0 voor de dagscore',()=>{const d=base();d.habits[0].versions[0].target=3;setEntry(d,'h0',today,{value:2},today);expect(dayScore(d,today).items[0].percent).toBeCloseTo(66.6667,3);expect(dayScore(d,today).score).toBe(0);});
+ it('C: zondaggewoonte verschijnt niet op maandag',()=>{const d=base();d.habits[0].versions[0].schedule={type:'weekdays',days:[0]};expect(dayScore(d,'2026-10-26').total).toBe(0);expect(dayScore(d,today).total).toBe(1);});
+ it('D: gewijzigd doel bewaart historische voltooiing',()=>{const d=base(1,'2026-10-24');d.habits[0].versions[0].target=2;setEntry(d,'h0','2026-10-24',{value:2},today);saveVersion(d,'h0',{...d.habits[0].versions[0],effectiveFrom:today,target:3});expect(dayScore(d,'2026-10-24').score).toBe(100);expect(dayScore(d,today).items[0].version.target).toBe(3);});
+ it('E: vier geplande zondagen vormen streak 4',()=>{const d=base(1,'2026-10-04');d.habits[0].versions[0].schedule={type:'weekdays',days:[0]};for(const date of ['2026-10-04','2026-10-11','2026-10-18',today])setEntry(d,'h0',date,{value:1},today);expect(habitStats(d,'h0',today).current).toBe(4);});
+ it('F: pauze telt niet en onderbreekt streak niet',()=>{const d=base(1,'2026-10-23');setEntry(d,'h0','2026-10-23',{value:1},today);setEntry(d,'h0','2026-10-24',{paused:true},today);setEntry(d,'h0',today,{value:1},today);expect(dayScore(d,'2026-10-24').score).toBeNull();expect(habitStats(d,'h0',today).current).toBe(2);});
+ it('G: historische correctie herberekent score, gemiddelde, XP en streak',()=>{const d=base(2,'2026-10-24');setEntry(d,'h0','2026-10-24',{value:1},today);expect(careerXP(d,today)).toBe(10);setEntry(d,'h1','2026-10-24',{value:1},today);expect(dayScore(d,'2026-10-24').score).toBe(100);expect(careerXP(d,today)).toBe(40);expect(mean(history(d,today))).toBe(50);expect(streak(history(d,today),today).current).toBe(1);});
+ it('H: uitvinken en opnieuw aanvinken verdubbelt XP niet',()=>{const d=base();setEntry(d,'h0',today,{value:1},today);const xp=careerXP(d,today);setEntry(d,'h0',today,{value:0},today);expect(careerXP(d,today)).toBe(0);setEntry(d,'h0',today,{value:1},today);expect(careerXP(d,today)).toBe(xp);expect(d.entries).toHaveLength(1);});
+ it('I: gemiddelde 100, 50, 75 is 75 en telt toekomst niet mee',()=>{const d=base(4,'2026-10-19');for(let day=0;day<3;day++)for(let i=0;i<[4,2,3][day];i++)setEntry(d,'h'+i,addDays('2026-10-19',day),{value:1},today);expect(mean(history(d,'2026-10-21'))).toBe(75);});
+ it('J: lege dag is geen perfecte dag',()=>{expect(dayScore(emptyData(),today).score).toBeNull();expect(careerXP(emptyData(),today)).toBe(0);});
+ it('lopende dag breekt streak niet, afgesloten gemiste dag wel',()=>{const d=base(1,'2026-10-24');setEntry(d,'h0','2026-10-24',{value:1},today);expect(habitStats(d,'h0',today).current).toBe(1);expect(habitStats(d,'h0','2026-10-26').current).toBe(0);});
+ it('specifieke datums herhalen niet wekelijks',()=>{const d=base();d.habits[0].versions[0].schedule={type:'dates',dates:[today]};expect(dayScore(d,'2026-11-01').total).toBe(0);});
+ it('archiveren laat oude gegevens intact',()=>{const d=base(1,'2026-10-24');setEntry(d,'h0','2026-10-24',{value:1},today);saveVersion(d,'h0',{...d.habits[0].versions[0],effectiveFrom:today,status:'archived'});expect(dayScore(d,today).score).toBeNull();expect(dayScore(d,'2026-10-24').score).toBe(100);});
+ it('weigert toekomst, negatief en NaN',()=>{const d=base();expect(()=>setEntry(d,'h0','2026-10-26',{value:1},today)).toThrow();expect(()=>setEntry(d,'h0',today,{value:-1},today)).toThrow();expect(()=>setEntry(d,'h0',today,{value:NaN},today)).toThrow();});
+ it('leveldrempels zijn 0, 100, 250, 450 en 700',()=>{[0,100,250,450,700].forEach((xp,i)=>expect(levelInfo(xp).level).toBe(i+1));});
+ it('N: doel-XP is afgeleid en wordt slechts eenmaal toegekend',()=>{const d=base();d.goals.push({id:'goal',name:'Weekdoel',description:'',category:'Sport',kind:'week',start:weekStart(today),end:today,target:1,unit:'keer',progress:0,habitId:'h0',metric:'completions',completedAt:null,archived:false});setEntry(d,'h0',today,{value:1},today);reconcileGoals(d,today);expect(goalValue(d,d.goals[0],today)).toBe(1);expect(careerXP(d,today)).toBe(80);reconcileGoals(d,today);expect(careerXP(d,today)).toBe(80);setEntry(d,'h0',today,{value:0},today);reconcileGoals(d,today);expect(careerXP(d,today)).toBe(0);expect(d.goals[0].completedAt).toBeNull();});
+ it('beloning verlaagt besteedbaar saldo, niet carrière-XP; geen dubbele inwisseling',()=>{const d=base();setEntry(d,'h0',today,{value:1},today);d.rewards.push({id:'r',name:'Film',description:'',cost:20});redeem(d,'r',today);expect(wallet(d,today)).toMatchObject({earned:30,available:10});expect(()=>redeem(d,'r',today)).toThrow();setEntry(d,'h0',today,{value:0},today);expect(wallet(d,today)).toMatchObject({available:0,correctionDebt:20});});
+});
+describe('M: lokale kalenderdatums',()=>{
+ it('Nederlandse zomertijd en wintertijd overslaan geen kalenderdag',()=>{expect(addDays('2026-03-28',1)).toBe('2026-03-29');expect(addDays('2026-03-29',1)).toBe('2026-03-30');expect(addDays('2026-10-25',1)).toBe('2026-10-26');});
+ it('schrikkeldag en jaarwissel',()=>{expect(addDays('2024-02-28',1)).toBe('2024-02-29');expect(addDays('2025-12-31',1)).toBe('2026-01-01');expect(validDate('2026-02-29')).toBe(false);});
+ it('middernacht gebruikt lokale datum, geen UTC-datum',()=>{expect(localDate(new Date(2026,9,25,0,1))).toBe(today);expect(localDate(new Date(2026,9,24,23,59))).toBe('2026-10-24');});
+});

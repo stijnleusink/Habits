@@ -1,0 +1,9 @@
+import {useEffect,useId,useRef,type ReactNode} from 'react';
+import {X,Plus,ArrowUpRight} from 'lucide-react';
+export function Modal({title,children,onClose}:{title:string;children:ReactNode;onClose:()=>void}){const ref=useRef<HTMLDialogElement>(null),id=useId();useEffect(()=>{const dialog=ref.current!;dialog.showModal();return()=>dialog.close();},[]);return <dialog ref={ref} aria-labelledby={id} onCancel={e=>{e.preventDefault();onClose();}}><div className="modal-head"><h2 id={id}>{title}</h2><button className="icon-button" aria-label="Sluiten" onClick={onClose}><X size={21}/></button></div>{children}</dialog>;}
+export function SectionTitle({eyebrow,title,children}:{eyebrow?:string;title:string;children?:ReactNode}){return <div className="section-heading"><div>{eyebrow&&<span className="eyebrow">{eyebrow}</span>}<h2>{title}</h2></div>{children}</div>;}
+export function Progress({value,label}:{value:number;label?:string}){return <div className="progress" role="progressbar" aria-label={label??'Voortgang'} aria-valuenow={Math.round(value)} aria-valuemin={0} aria-valuemax={100}><div style={{width:Math.min(100,Math.max(0,value))+'%'}}/></div>;}
+export function Empty({title,text,action,onClick}:{title:string;text:string;action?:string;onClick?:()=>void}){return <div className="empty"><div className="empty-symbol"><ArrowUpRight size={28}/></div><h3>{title}</h3><p>{text}</p>{action&&<button className="primary" onClick={onClick}><Plus size={18}/>{action}</button>}</div>;}
+export function Metric({label,value,sub}:{label:string;value:ReactNode;sub?:string}){return <div className="metric"><span>{label}</span><strong>{value}</strong>{sub&&<small>{sub}</small>}</div>;}
+export const fmt=(n:number|null,digits=0)=>n===null?'—':n.toLocaleString('nl-NL',{maximumFractionDigits:digits});
+export function InputField({label,children}:{label:string;children:ReactNode}){return <label className="field"><span>{label}</span>{children}</label>;}

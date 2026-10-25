@@ -1,0 +1,12 @@
+import {it,expect,afterEach,vi} from 'vitest';
+import {uid,emptyData,validateData,defaultVersion} from '../lib/schema';
+import {checksum} from '../lib/backup';
+import {Repository} from '../database/repository';
+import {parseDate} from '../lib/dates';
+afterEach(()=>vi.unstubAllGlobals());
+it('UUID-fallback gebruikt cryptografische random bytes',()=>{const native=crypto;vi.stubGlobal('crypto',{getRandomValues:native.getRandomValues.bind(native)});const a=uid(),b=uid();expect(a).toMatch(/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/);expect(a).not.toBe(b);});
+it('SHA-256-fallback en Web Crypto produceren exact dezelfde checksum',async()=>{const data={hello:'wereld 🌍',getal:1.75,nested:[null,true,42]};const expected=await checksum(data);vi.stubGlobal('crypto',{subtle:undefined});expect(await checksum(data)).toBe(expected);});
+it('onmogelijk afvinkdoel in een import wordt geweigerd',()=>{const d=emptyData();d.habits.push({id:'h',versions:[{...defaultVersion(),name:'Check',target:3}]});expect(()=>validateData(d)).toThrow('afvinkgewoonte');});
+it('reset verwijdert ook herstelpunten en back-upmetadata',async()=>{const r=new Repository('test','reset-'+uid());try{await r.mutate(d=>{d.settings.name='Test';});await r.markBackup(true);await r.reset(1);expect((await r.read()).data).toEqual(emptyData());expect(await r.points()).toHaveLength(0);expect((await r.metadata()).lastExternalAt).toBeNull();}finally{await r.close();}});
+it('reset met verouderde bevestiging wijzigt niets',async()=>{const r=new Repository('test','reset-'+uid());try{await r.mutate(d=>{d.settings.name='Nieuw';});await expect(r.reset(0)).rejects.toThrow('intussen gewijzigd');expect((await r.read()).data.settings.name).toBe('Nieuw');}finally{await r.close();}});
+it('Nederlandse DST heeft kalenderdagen van 23 en 25 uur (in Europe/Amsterdam)',()=>{if(Intl.DateTimeFormat().resolvedOptions().timeZone!=='Europe/Amsterdam')return;expect((+parseDate('2026-03-29')-+parseDate('2026-03-28'))/3600000).toBe(23);expect((+parseDate('2026-10-25')-+parseDate('2026-10-24'))/3600000).toBe(25);});

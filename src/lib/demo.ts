@@ -1,0 +1,7 @@
+import { emptyData, defaultVersion, type AppData } from './schema';
+import { addDays, localDate, weekStart } from './dates';
+export function demoData(today=localDate()):AppData {const d=emptyData(),start=addDays(today,-13);d.settings.name='Testprofiel';d.habits=[
+ {id:'demo-water',versions:[{...defaultVersion(start),name:'Water drinken',icon:'💧',category:'Gezondheid',type:'amount',target:3,unit:'liter',step:0.25}]},
+ {id:'demo-read',versions:[{...defaultVersion(start),name:'Even lezen',icon:'📖',category:'Persoonlijk',type:'time',target:20,unit:'minuten',step:5}]},
+ {id:'demo-move',versions:[{...defaultVersion(start),name:'In beweging',icon:'⚡',category:'Sport'}]}
+ ];for(let i=0;i<14;i++){const date=addDays(start,i);d.habits.forEach((h,j)=>d.entries.push({habitId:h.id,date,value:i===13?(j===0?1.75:j===1?10:0):(i+j)%5===0?0:h.versions[0].target,paused:false,note:''}));}d.reflections=[{date:today,mood:4,energy:3,note:'Dit zijn voorbeeldgegevens. Probeer gerust een back-up en herstel.',good:'Tijd voor mezelf gemaakt.',better:'Eerder beginnen.',grateful:''}];d.goals=[{id:'demo-goal',name:'Vijf leesmomenten',description:'Een klein moment voor een groot idee.',category:'Persoonlijk',kind:'week',start:weekStart(today),end:addDays(weekStart(today),6),target:5,unit:'keer',progress:0,habitId:'demo-read',metric:'completions',completedAt:null,archived:false}];d.rewards=[{id:'demo-reward',name:'Een filmavond',description:'Telefoon weg, favoriete film aan.',cost:100}];return d;}
